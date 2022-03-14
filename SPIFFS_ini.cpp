@@ -21,19 +21,76 @@
 
 File ini;
 
+bool spiffsWriting = false;
 
-bool ini_open (String ini_name) {
+void mountSpiffs(const char * partition)
+{
+  //wait for any writes to complete
+  if(spiffsWriting) {
+    do
+    {
+      vTaskDelay(10);
+    } while (spiffsWriting);
+  }
+
+  Serial.print("Mounting ");
+  Serial.println(partition);
+  //format on fail
+  if(Spiffs.begin(partition, true))
+  {
+    Serial.println("success.");
+  }
+  else
+  {
+    Serial.println("failed.");
+  }
+}
+
+void unmountSpiffs()
+{
+  Serial.print("Unmounting ");
+  Serial.println(Spiffs.mountedPartition());
+  if(Spiffs.end())
+  {
+    Serial.println("success.");
+  }
+  else
+  {
+    Serial.println("failed.");
+  }
+}
+
+bool ini_open(const char * partition, const char * ini_name) {
+
+  //wait for any writes to complete before closing file/partition
+  unsigned long writeTimeout = millis();
+  if(spiffsWriting) {
+    do
+    {
+      vTaskDelay(10);
+    } while (spiffsWriting && millis() - writeTimeout <= 6000);
+  }
+
+  //check correct partition
+  if(strcmp(Spiffs.mountedPartition(),partition) != 0) {
+    unmountSpiffs();  //unmount partition
+    mountSpiffs(partition); //mount selected partition
+  }
+
   if (ini) ini_close();
 
-  if (SPIFFS.exists(ini_name)) ini = SPIFFS.open(ini_name, "r");
+  if (Spiffs.exists(ini_name)) ini = Spiffs.open(ini_name, "r");
 
   return ini;
 }
 
+bool ini_close() {
+  if (ini) ini.close();
+  return true;
+}
 
 bool ini_eof() {
   if (!ini) return true;
-
   return (ini.available() <= 0);
 }
 
@@ -45,12 +102,13 @@ String ini_read_line() {
   char    c = 0;
   bool test = false;
 
+  unsigned long readTimeout = millis();
   do { // read string until CR or LF
     if ( ini_eof() ) break;
     c = ini.read();
     test = (c != 13) && (c != 10); // not CR and not LF
     if (test) s +=  c;
-  } while (test);
+  } while (test && millis() - readTimeout <= 3000);
 
   // if last char was CR then read LF (if exists)
   if ( (c==13) && !ini_eof() ) {
@@ -78,7 +136,8 @@ String ini_read(String section, String key, String def) {
   int  ind   = 0;
 
   ini.seek(0);
-  while (!ini_eof() ) { // find section
+  unsigned long findSectionTimeout = millis();
+  while (!ini_eof() && millis() - findSectionTimeout <= 3000) { // find section
     s = ini_read_line();
     if ( (s.charAt(0) == '#') || (s.charAt(0) == ';') ) continue; // comment - get next line
     s.toUpperCase();
@@ -89,7 +148,8 @@ String ini_read(String section, String key, String def) {
 
   if (found) { // got section
     found = false;
-    while (!ini_eof() ) { // find key
+    unsigned long findKeyTimeout = millis();
+    while (!ini_eof() && millis() - findKeyTimeout <= 3000) { // find key
       s = ini_read_line();
       if ( (s.charAt(0) == '#') || (s.charAt(0) == ';') ) continue; // comment - get next line
       s.toUpperCase();
@@ -133,13 +193,15 @@ bool ini_delete(String section) {
   String path    = inifile.substring( 0, ind + 1);
   String tmpfile = path + tmpname;
 
-  if (SPIFFS.exists(tmpfile)) SPIFFS.remove(tmpfile); // if exists tmpfile - remove it
+  if (Spiffs.exists(tmpfile)) Spiffs.remove(tmpfile); // if exists tmpfile - remove it
 
-  tmpini = SPIFFS.open(tmpfile, "w"); // open tmpfile
+  tmpini = Spiffs.open(tmpfile, "w"); // open tmpfile
   if (tmpini) {
     ini.seek(0);
     tmpini.seek(0);
-    while ( !ini_eof() ) { // find section
+
+    unsigned long findSectionTimeout = millis();
+    while (!ini_eof() && millis() - findSectionTimeout <= 3000) { // find section
       s = ini_read_line();
       tmpini.println(s);  // save to new file
       // search for section
@@ -153,7 +215,8 @@ bool ini_delete(String section) {
     // we are inside the section
     if (section_found) {
       res = true;
-      while ( !ini_eof() ) {
+        unsigned long nextSectionTimeout = millis();
+        while (!ini_eof() && millis() - nextSectionTimeout <= 3000) { // find section
         s = ini_read_line();
         s.toUpperCase();
         //found next section break
@@ -162,7 +225,8 @@ bool ini_delete(String section) {
     }
 
     // save all to the end of file
-    while ( !ini_eof() ) {
+    unsigned long saveTimeout = millis();
+    while (!ini_eof() && millis() - saveTimeout <= 3000) {
       s = ini_read_line();
       tmpini.println( s );
     }
@@ -171,9 +235,10 @@ bool ini_delete(String section) {
   // close ini files
   if (tmpini) tmpini.close();
   if (ini   ) ini.close();
-  SPIFFS.remove( inifile ); //remove old ini
-  SPIFFS.rename( tmpfile, inifile ); // tmpini is now ini
-  ini_open(inifile);
+  Spiffs.remove( inifile ); //remove old ini
+  Spiffs.rename( tmpfile, inifile ); // tmpini is now ini
+  if (ini) ini_close();
+  if (Spiffs.exists(inifile)) ini = Spiffs.open(inifile, "r");
 
   return res;
 }
@@ -181,6 +246,8 @@ bool ini_delete(String section) {
 
 bool ini_write(String section, String key, String value) {
   if (!ini) return false;
+
+  spiffsWriting = true;
 
   bool res = false;
   File tmpini;
@@ -206,13 +273,15 @@ bool ini_write(String section, String key, String value) {
   String path    = inifile.substring( 0, ind + 1);
   String tmpfile = path + tmpname;
 
-  if (SPIFFS.exists(tmpfile)) SPIFFS.remove(tmpfile); // if exists tmpfile - remove it
+  if (Spiffs.exists(tmpfile)) Spiffs.remove(tmpfile); // if exists tmpfile - remove it
 
-  tmpini = SPIFFS.open(tmpfile, "w"); // open tmpfile
+  tmpini = Spiffs.open(tmpfile, "w"); // open tmpfile
   if (tmpini) {
     ini.seek(0);
     tmpini.seek(0);
-    while ( !ini_eof() ) { // find section
+
+    unsigned long findSectionTimeout = millis();
+    while (!ini_eof() && millis() - findSectionTimeout <= 3000) { // find section
       s = ini_read_line();
       tmpini.println(s);  // save to new file
       // search for section
@@ -222,10 +291,12 @@ bool ini_write(String section, String key, String value) {
         if ( s == "[" + sec_upp + "]" ) { section_found = true; break; } // got it!
       }
     }
+
     // we are inside the section
     if (section_found) {
       key_found = false;
-      while ( !ini_eof() ) { // find key
+      unsigned long findKeyTimeout = millis();
+      while (!ini_eof() && millis() - findKeyTimeout <= 3000) { // find key
         s = ini_read_line();
         if ( (s.charAt(0) == '#') || (s.charAt(0) == ';') ) { // comment - get next line
           tmpini.println(s);  // comment - save to new file
@@ -290,7 +361,8 @@ bool ini_write(String section, String key, String value) {
     }
 
     // save all to the end of file
-    while ( !ini_eof() ) {
+    unsigned long saveTimeout = millis();
+    while (!ini_eof() && millis() - saveTimeout <= 3000) {
       s = ini_read_line();
       tmpini.println( s );
     }
@@ -300,15 +372,12 @@ bool ini_write(String section, String key, String value) {
   if (tmpini) tmpini.close();
   if (ini   ) ini.close();
 
-  SPIFFS.remove( inifile ); //remove old ini
-  SPIFFS.rename( tmpfile, inifile ); // tmpini is now ini
-  ini_open(inifile);
+  Spiffs.remove( inifile ); //remove old ini
+  Spiffs.rename( tmpfile, inifile ); // tmpini is now ini
+  if (ini) ini_close();
+  if (Spiffs.exists(inifile)) ini = Spiffs.open(inifile, "r");
+
+  spiffsWriting = false;
 
   return res;
-}
-
-
-bool ini_close() {
-  if (ini) ini.close();
-  return true;
 }

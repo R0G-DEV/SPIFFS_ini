@@ -14,14 +14,14 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-
 #ifndef _SPIFFS_ini_
 #define _SPIFFS_ini_
 
 #include "Arduino.h"
 #include <string.h>
+#include <mpspiffs.hpp>
 
-bool   ini_open (String ini_name);
+bool   ini_open(const char * partition, const char * ini_name);
 String ini_read (String section, String key, String def);
 bool   ini_write(String section, String key, String value);
 bool   ini_delete(String section);
